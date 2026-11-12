@@ -1,0 +1,75 @@
+name: CI Database Migration Validation
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sql/**'
+
+jobs:
+  validate-and-test:
+    name: Validate Scripts & Test Migration
+    runs-on: ubuntu-latest
+
+    services:
+      postgres-test:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Verify Paired Rollback Scripts Exist
+        run: |
+          echo "Verifying each V*.sql has matching U*.sql rollback..."
+          MISSING=0
+          for v_file in sql/V[0-9]*__*.sql; do
+            [ -f "$v_file" ] || continue
+            base=$(basename "$v_file")
+            version=$(echo "$base" | sed -E 's/^(V[0-9]+).*/\1/')
+            u_prefix=$(echo "$version" | sed 's/^V/U/')
+            u_match=$(ls sql/${u_prefix}__*.sql 2>/dev/null || true)
+            if [ -z "$u_match" ]; then
+              echo "ERROR: Missing paired rollback script for $v_file (expected sql/${u_prefix}__*.sql)"
+              MISSING=1
+            else
+              echo "OK: $v_file paired with $u_match"
+            fi
+          done
+          if [ $MISSING -ne 0 ]; then
+            echo "CI validation failed: Forward migrations require matching rollback scripts."
+            exit 1
+          fi
+
+      - name: Execute Flyway Forward Migration on Ephemeral DB
+        uses: red-gate/flyway-action@v1
+        with:
+          version: 'latest'
+          args: >
+            -url="jdbc:postgresql://localhost:5432/test_db"
+            -user="test_user"
+            -password="test_password"
+            -locations="filesystem:sql"
+            migrate
+
+      - name: Verify Migration Status
+        uses: red-gate/flyway-action@v1
+        with:
+          version: 'latest'
+          args: >
+            -url="jdbc:postgresql://localhost:5432/test_db"
+            -user="test_user"
+            -password="test_password"
+            -locations="filesystem:sql"
+            info

@@ -1,0 +1,80 @@
+name: Headless Production Database Deployment
+
+on:
+  repository_dispatch:
+    types: [ jira-cab-approved ]
+
+jobs:
+  deploy-production:
+    name: Headless Flyway Migration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Execute Flyway Migration against Target DB
+        id: flyway_run
+        uses: red-gate/flyway-action@v1
+        with:
+          version: 'latest'
+          args: >
+            -url="${{ secrets.PROD_DB_JDBC_URL }}"
+            -user="${{ secrets.PROD_DB_USER }}"
+            -password="${{ secrets.PROD_DB_PASSWORD }}"
+            -locations="filesystem:sql"
+            migrate
+
+      - name: Post Success Comment to Jira Issue
+        if: success()
+        run: |
+          ISSUE_KEY="${{ github.event.client_payload.issue_key }}"
+          if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
+            curl -s -X POST "${{ secrets.JIRA_URL }}/rest/api/3/issue/${ISSUE_KEY}/comment" \
+              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "body": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Automated Production Database Deployment SUCCEEDED.\nExecuted headless via GitHub Actions.\nCommit: '"${{ github.sha }}"'\nApproved by: '"${{ github.event.client_payload.approver }}"'"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }'
+          fi
+
+      - name: Post Failure Alert to Jira Issue
+        if: failure()
+        run: |
+          ISSUE_KEY="${{ github.event.client_payload.issue_key }}"
+          if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
+            curl -s -X POST "${{ secrets.JIRA_URL }}/rest/api/3/issue/${ISSUE_KEY}/comment" \
+              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "body": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "CRITICAL: Production Database Deployment FAILED in GitHub Actions.\nReview runner logs immediately: '"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"'"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }'
+          fi

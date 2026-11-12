@@ -1,0 +1,9 @@
+{
+  "event_type": "jira-cab-approved",
+  "client_payload": {
+    "issue_key": "COAL-101",
+    "summary": "Add Archival Tracking to Shipment Records",
+    "approver": "John Smith (CAB Lead)",
+    "timestamp": "2026-11-11T16:00:00Z"
+  }
+}
