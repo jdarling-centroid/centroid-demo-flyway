@@ -16,7 +16,7 @@ jobs:
 
       - name: Execute Flyway Migration against Target DB
         id: flyway_run
-        uses: red-gate/flyway-actionsv1
+        uses: red-gate/flyway-actions@v1
         with:
           version: 'latest'
           args: >
