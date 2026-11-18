@@ -14,24 +14,35 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Execute Flyway Migration against Target DB
+      - name: Execute Flyway Migration against Supabase
         id: flyway_run
-        uses: red-gate/flyway-actions@v1
-        with:
-          version: 'latest'
-          args: >
-            -url="${{ secrets.PROD_DB_JDBC_URL }}"
-            -user="${{ secrets.PROD_DB_USER }}"
-            -password="${{ secrets.PROD_DB_PASSWORD }}"
-            -locations="filesystem:sql"
+        run: |
+          echo "Starting Flyway migration..."
+          docker run --rm \
+            -v "${{ github.workspace }}/sql:/flyway/sql" \
+            flyway/flyway:latest \
+            -url="${{ secrets.PROD_DB_JDBC_URL }}" \
+            -user="${{ secrets.PROD_DB_USER }}" \
+            -password="${{ secrets.PROD_DB_PASSWORD }}" \
+            -locations="filesystem:/flyway/sql" \
             migrate
+          echo "Flyway migration completed successfully."
 
-      - name: Post Success Comment to Jira Issue
+      - name: Post Success Comment and Transition Ticket to Implemented
         if: success()
         run: |
           ISSUE_KEY="${{ github.event.client_payload.issue_key }}"
+          JIRA_BASE=$(echo "${{ secrets.JIRA_URL }}" | sed 's:/*$::')
+          if [[ ! "$JIRA_BASE" =~ ^https?:// ]]; then
+            JIRA_BASE="https://$JIRA_BASE"
+          fi
+
+          echo "Target Jira Base URL: $JIRA_BASE"
+          echo "Target Issue Key: $ISSUE_KEY"
+
           if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
-            curl -s -X POST "${{ secrets.JIRA_URL }}/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            echo "Posting success comment to $ISSUE_KEY..."
+            COMMENT_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{
@@ -44,21 +55,37 @@ jobs:
                       "content": [
                         {
                           "type": "text",
-                          "text": "Automated Production Database Deployment SUCCEEDED.\nExecuted headless via GitHub Actions.\nCommit: '"${{ github.sha }}"'\nApproved by: '"${{ github.event.client_payload.approver }}"'"
+                          "text": "Automated Production Database Deployment SUCCEEDED.\n• Executed headless via GitHub Actions.\n• Commit: '"${{ github.sha }}"'\n• Approved by: '"${{ github.event.client_payload.approver }}"'"
                         }
                       ]
                     }
                   ]
                 }
-              }'
+              }')
+            echo "$COMMENT_RESP"
+
+            echo "Transitioning $ISSUE_KEY to Implemented (Transition ID: 51)..."
+            TRANS_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/transitions" \
+              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{"transition": {"id": "51"}}')
+            echo "$TRANS_RESP"
+          else
+            echo "Skipping Jira notification: ISSUE_KEY or JIRA_API_TOKEN is missing."
           fi
 
       - name: Post Failure Alert to Jira Issue
         if: failure()
         run: |
           ISSUE_KEY="${{ github.event.client_payload.issue_key }}"
+          JIRA_BASE=$(echo "${{ secrets.JIRA_URL }}" | sed 's:/*$::')
+          if [[ ! "$JIRA_BASE" =~ ^https?:// ]]; then
+            JIRA_BASE="https://$JIRA_BASE"
+          fi
+
           if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
-            curl -s -X POST "${{ secrets.JIRA_URL }}/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            echo "Posting failure alert to $ISSUE_KEY..."
+            curl -s -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{
