@@ -16,16 +16,26 @@ jobs:
 
       - name: Execute Flyway Migration against Supabase
         id: flyway_run
+        env:
+          FLYWAY_URL: ${{ secrets.PROD_DB_JDBC_URL }}
+          FLYWAY_USER: ${{ secrets.PROD_DB_USER }}
+          FLYWAY_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          FLYWAY_LOCATIONS: filesystem:/flyway/sql
         run: |
           echo "Starting Flyway migration..."
+          echo "Target JDBC URL prefix: $(echo "$FLYWAY_URL" | cut -d'@' -f2 | cut -d'?' -f1)"
+          
+          # Using environment variables is the cleanest, most reliable way to pass credentials to Flyway
           docker run --rm \
             -v "${{ github.workspace }}/sql:/flyway/sql" \
+            -e FLYWAY_URL="$FLYWAY_URL" \
+            -e FLYWAY_USER="$FLYWAY_USER" \
+            -e FLYWAY_PASSWORD="$FLYWAY_PASSWORD" \
+            -e FLYWAY_LOCATIONS="filesystem:/flyway/sql" \
+            -e FLYWAY_CONNECT_RETRIES=10 \
             flyway/flyway:latest \
-            -url="${{ secrets.PROD_DB_JDBC_URL }}" \
-            -user="${{ secrets.PROD_DB_USER }}" \
-            -password="${{ secrets.PROD_DB_PASSWORD }}" \
-            -locations="filesystem:/flyway/sql" \
             migrate
+          
           echo "Flyway migration completed successfully."
 
       - name: Post Success Comment and Transition Ticket to Implemented
@@ -42,7 +52,7 @@ jobs:
 
           if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
             echo "Posting success comment to $ISSUE_KEY..."
-            COMMENT_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            curl -f -s -w "\nHTTP_STATUS:%{http_code}\n" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{
@@ -61,15 +71,13 @@ jobs:
                     }
                   ]
                 }
-              }')
-            echo "$COMMENT_RESP"
+              }' || echo "Failed to post comment to Jira."
 
             echo "Transitioning $ISSUE_KEY to Implemented (Transition ID: 51)..."
-            TRANS_RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/transitions" \
+            curl -f -s -w "\nHTTP_STATUS:%{http_code}\n" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/transitions" \
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
-              -d '{"transition": {"id": "51"}}')
-            echo "$TRANS_RESP"
+              -d '{"transition": {"id": "51"}}' || echo "Failed to transition issue in Jira."
           else
             echo "Skipping Jira notification: ISSUE_KEY or JIRA_API_TOKEN is missing."
           fi
@@ -104,5 +112,5 @@ jobs:
                     }
                   ]
                 }
-              }'
+              }' || true
           fi
