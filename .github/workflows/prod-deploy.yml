@@ -23,7 +23,6 @@ jobs:
         run: |
           echo "Starting Flyway migration..."
           
-          # Run flyway info and migrate, capturing output to a log file so we can read the exact error if it fails
           set +e
           docker run --rm \
             -v "${{ github.workspace }}/sql:/flyway/sql" \
@@ -42,9 +41,7 @@ jobs:
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "Flyway failed with exit code $EXIT_CODE"
-            # Extract first 500 chars of error to post to Jira
-            ERROR_SNIPPET=$(tail -n 20 flyway_output.log | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c 1-300)
-            echo "ERROR_SNIPPET=$ERROR_SNIPPET" >> $GITHUB_ENV
+            tail -n 25 flyway_output.log > "${{ github.workspace }}/flyway_error.txt"
             exit $EXIT_CODE
           fi
 
@@ -59,7 +56,7 @@ jobs:
 
           if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
             echo "Posting success comment to $ISSUE_KEY..."
-            curl -f -s -w "\nHTTP_STATUS:%{http_code}\n" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            curl -i -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{
@@ -78,13 +75,13 @@ jobs:
                     }
                   ]
                 }
-              }' || echo "Failed to post comment to Jira."
+              }'
 
             echo "Transitioning $ISSUE_KEY to Implemented (Transition ID: 51)..."
-            curl -f -s -w "\nHTTP_STATUS:%{http_code}\n" -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/transitions" \
+            curl -i -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/transitions" \
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
-              -d '{"transition": {"id": "51"}}' || echo "Failed to transition issue in Jira."
+              -d '{"transition": {"id": "51"}}'
           fi
 
       - name: Post Failure Alert to Jira Issue
@@ -96,26 +93,30 @@ jobs:
             JIRA_BASE="https://$JIRA_BASE"
           fi
 
-          if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
-            echo "Posting failure alert to $ISSUE_KEY with error snippet..."
-            curl -s -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
-              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              -d '{
-                "body": {
-                  "type": "doc",
-                  "version": 1,
-                  "content": [
-                    {
-                      "type": "paragraph",
-                      "content": [
-                        {
-                          "type": "text",
-                          "text": "CRITICAL: Database Deployment FAILED in GitHub Actions.\nError:\n'"${ERROR_SNIPPET}"'"
-                        }
-                      ]
-                    }
-                  ]
-                }
-              }' || true
+          ERR_MSG="Flyway execution failed. Check GitHub Actions logs."
+          if [ -f "${{ github.workspace }}/flyway_error.txt" ]; then
+            # Clean string for JSON embedding
+            ERR_MSG=$(cat "${{ github.workspace }}/flyway_error.txt" | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c 1-250)
           fi
+
+          echo "Posting failure alert to $ISSUE_KEY at $JIRA_BASE..."
+          curl -i -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "CRITICAL: Database Deployment FAILED in GitHub Actions.\nError:\n'"${ERR_MSG}"'"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }'
