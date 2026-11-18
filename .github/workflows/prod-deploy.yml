@@ -49,15 +49,26 @@ jobs:
         if: success()
         run: |
           ISSUE_KEY="${{ github.event.client_payload.issue_key }}"
-          JIRA_BASE=$(echo "${{ secrets.JIRA_URL }}" | sed 's:/*$::')
+          JIRA_BASE="${{ secrets.JIRA_URL }}"
+          if [ -z "$JIRA_BASE" ]; then
+            JIRA_BASE="https://centroid-demo.atlassian.net"
+          fi
+          JIRA_BASE=$(echo "$JIRA_BASE" | sed 's:/*$::')
           if [[ ! "$JIRA_BASE" =~ ^https?:// ]]; then
             JIRA_BASE="https://$JIRA_BASE"
           fi
 
+          JIRA_USER="${{ secrets.JIRA_USER_EMAIL }}"
+          if [ -z "$JIRA_USER" ]; then
+            JIRA_USER="jeremy.darling@centroid.com"
+          fi
+
+          echo "Target Jira: $JIRA_BASE (User: $JIRA_USER, Issue: $ISSUE_KEY)"
+
           if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
-            echo "Posting success comment to $ISSUE_KEY..."
+            echo "Posting success comment..."
             curl -i -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
-              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              -u "$JIRA_USER:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{
                 "body": {
@@ -79,7 +90,7 @@ jobs:
 
             echo "Transitioning $ISSUE_KEY to Implemented (Transition ID: 51)..."
             curl -i -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/transitions" \
-              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              -u "$JIRA_USER:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{"transition": {"id": "51"}}'
           fi
@@ -88,20 +99,28 @@ jobs:
         if: failure()
         run: |
           ISSUE_KEY="${{ github.event.client_payload.issue_key }}"
-          JIRA_BASE=$(echo "${{ secrets.JIRA_URL }}" | sed 's:/*$::')
+          JIRA_BASE="${{ secrets.JIRA_URL }}"
+          if [ -z "$JIRA_BASE" ]; then
+            JIRA_BASE="https://centroid-demo.atlassian.net"
+          fi
+          JIRA_BASE=$(echo "$JIRA_BASE" | sed 's:/*$::')
           if [[ ! "$JIRA_BASE" =~ ^https?:// ]]; then
             JIRA_BASE="https://$JIRA_BASE"
           fi
 
+          JIRA_USER="${{ secrets.JIRA_USER_EMAIL }}"
+          if [ -z "$JIRA_USER" ]; then
+            JIRA_USER="jeremy.darling@centroid.com"
+          fi
+
           ERR_MSG="Flyway execution failed. Check GitHub Actions logs."
           if [ -f "${{ github.workspace }}/flyway_error.txt" ]; then
-            # Clean string for JSON embedding
             ERR_MSG=$(cat "${{ github.workspace }}/flyway_error.txt" | tr '\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c 1-250)
           fi
 
-          echo "Posting failure alert to $ISSUE_KEY at $JIRA_BASE..."
+          echo "Posting failure alert to $ISSUE_KEY at $JIRA_BASE (User: $JIRA_USER)..."
           curl -i -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
-            -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+            -u "$JIRA_USER:${{ secrets.JIRA_API_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d '{
               "body": {
@@ -119,4 +138,4 @@ jobs:
                   }
                 ]
               }
-            }'
+            }' || true
