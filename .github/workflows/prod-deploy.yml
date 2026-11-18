@@ -20,23 +20,33 @@ jobs:
           FLYWAY_URL: ${{ secrets.PROD_DB_JDBC_URL }}
           FLYWAY_USER: ${{ secrets.PROD_DB_USER }}
           FLYWAY_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
-          FLYWAY_LOCATIONS: filesystem:/flyway/sql
         run: |
           echo "Starting Flyway migration..."
-          echo "Target JDBC URL prefix: $(echo "$FLYWAY_URL" | cut -d'@' -f2 | cut -d'?' -f1)"
           
-          # Using environment variables is the cleanest, most reliable way to pass credentials to Flyway
+          # Run flyway info and migrate, capturing output to a log file so we can read the exact error if it fails
+          set +e
           docker run --rm \
             -v "${{ github.workspace }}/sql:/flyway/sql" \
             -e FLYWAY_URL="$FLYWAY_URL" \
             -e FLYWAY_USER="$FLYWAY_USER" \
             -e FLYWAY_PASSWORD="$FLYWAY_PASSWORD" \
             -e FLYWAY_LOCATIONS="filesystem:/flyway/sql" \
-            -e FLYWAY_CONNECT_RETRIES=10 \
+            -e FLYWAY_CONNECT_RETRIES=5 \
             flyway/flyway:latest \
-            migrate
+            migrate > flyway_output.log 2>&1
           
-          echo "Flyway migration completed successfully."
+          EXIT_CODE=$?
+          echo "=== FLYWAY LOG OUTPUT ==="
+          cat flyway_output.log
+          echo "========================="
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "Flyway failed with exit code $EXIT_CODE"
+            # Extract first 500 chars of error to post to Jira
+            ERROR_SNIPPET=$(tail -n 20 flyway_output.log | tr '\n' ' ' | sed 's/"/\\"/g' | cut -c 1-300)
+            echo "ERROR_SNIPPET=$ERROR_SNIPPET" >> $GITHUB_ENV
+            exit $EXIT_CODE
+          fi
 
       - name: Post Success Comment and Transition Ticket to Implemented
         if: success()
@@ -46,9 +56,6 @@ jobs:
           if [[ ! "$JIRA_BASE" =~ ^https?:// ]]; then
             JIRA_BASE="https://$JIRA_BASE"
           fi
-
-          echo "Target Jira Base URL: $JIRA_BASE"
-          echo "Target Issue Key: $ISSUE_KEY"
 
           if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
             echo "Posting success comment to $ISSUE_KEY..."
@@ -78,8 +85,6 @@ jobs:
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{"transition": {"id": "51"}}' || echo "Failed to transition issue in Jira."
-          else
-            echo "Skipping Jira notification: ISSUE_KEY or JIRA_API_TOKEN is missing."
           fi
 
       - name: Post Failure Alert to Jira Issue
@@ -92,7 +97,7 @@ jobs:
           fi
 
           if [ -n "$ISSUE_KEY" ] && [ -n "${{ secrets.JIRA_API_TOKEN }}" ]; then
-            echo "Posting failure alert to $ISSUE_KEY..."
+            echo "Posting failure alert to $ISSUE_KEY with error snippet..."
             curl -s -X POST "$JIRA_BASE/rest/api/3/issue/${ISSUE_KEY}/comment" \
               -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
               -H "Content-Type: application/json" \
@@ -106,7 +111,7 @@ jobs:
                       "content": [
                         {
                           "type": "text",
-                          "text": "CRITICAL: Production Database Deployment FAILED in GitHub Actions.\nReview runner logs immediately: '"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"'"
+                          "text": "CRITICAL: Database Deployment FAILED in GitHub Actions.\nError:\n'"${ERROR_SNIPPET}"'"
                         }
                       ]
                     }
