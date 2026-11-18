@@ -8,7 +8,7 @@ jobs:
   deploy-production:
     name: Headless Flyway Migration
     runs-on: ubuntu-latest
-    environment: Production
+    environment: jira-demo
 
     steps:
       - name: Checkout Code
